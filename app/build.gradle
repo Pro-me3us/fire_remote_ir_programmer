@@ -1,0 +1,43 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.prome3us.irprog'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.prome3us.irprog'
+        minSdk 22          // Original UI baseline; root bridge tested on API 28
+        targetSdk 30
+        versionCode 3
+        versionName '1.2-root'
+        testInstrumentationRunner 'com.prome3us.irprog.RootIntegrationTest'
+    }
+
+    buildTypes {
+        // IMPORTANT: keep minify OFF. The classes in com.amazon.tv.devicecontrol.commons must keep their
+        // exact names, or the service can't deserialize them.
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+    
+    lint {
+        // Keep the original prototype UI/SDK target; this is a sideloaded Fire OS app,
+        // not a Google Play release. A TV banner is part of the author's later UI polish.
+        disable 'MissingTvBanner', 'ExpiredTargetSdkVersion'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+// Magisk's maintained root-process and Binder lifecycle implementation.
+dependencies {
+    implementation 'com.github.topjohnwu.libsu:core:6.0.0'
+    implementation 'com.github.topjohnwu.libsu:service:6.0.0'
+}

@@ -15,7 +15,6 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewConfiguration;
 
-import com.amazon.tv.devicecontrol.commons.Definitions.RemoteButton;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -28,15 +27,9 @@ import java.util.List;
  * 350x1272) - this view draws that bitmap as-is and overlays only colored highlight shapes on top of
  * it, rather than drawing the remote's icons/body by hand.
  *
- * Shows every physical button; the 20 that map to a real RemoteButton are navigable and color-coded by
- * programming state, the rest (Home, Alexa mic, brightness, and the 4 app-shortcut rectangles) are
- * left undrawn/non-interactive - they're not part of the IR API (see Definitions.RemoteButton's full
- * constant list).
- *
- * Physical button mapping confirmed by hardware testing on a real remote (not just icon-reading): the
- * TV-icon button is GUIDE_LIVE; CUSTOM_A/B/C are the '1', '2', and top-right headphone-icon buttons
- * respectively - NOT any of the 4 app-shortcut rectangles, which turn out to be fixed OS app-launch
- * shortcuts with no IR capability at all. Home, Alexa/mic, and brightness remain non-programmable too.
+ * Highlights the 24 button IDs confirmed by the author's CoreELEC tests, including
+ * Home, Alexa, Settings and the four app shortcuts. Recents and Pro custom keys are
+ * not selectable because no direct-table mapping has been established for them.
  */
 public class RemoteDiagramView extends View {
 
@@ -46,7 +39,7 @@ public class RemoteDiagramView extends View {
     enum Shape { CIRCLE, ROCKER_TOP, ROCKER_BOTTOM, DPAD_ARC, DPAD_CENTER, APP_RECT }
 
     static final class Slot {
-        final RemoteButton button; // null = decorative/non-programmable
+        final ProgramButton button; // null = decorative/non-programmable
         final Shape shape;
         final float cx, cy;        // normalized DRAWING center, 0..1
         final float w, h;          // normalized size, 0..1
@@ -54,7 +47,7 @@ public class RemoteDiagramView extends View {
         final float navCx, navCy;  // normalized NAVIGATION anchor - see note below
 
         // Most shapes draw and navigate from the same point, so this is the common-case constructor.
-        Slot(RemoteButton button, Shape shape, float cx, float cy, float w, float h, float startAngle, float sweep) {
+        Slot(ProgramButton button, Shape shape, float cx, float cy, float w, float h, float startAngle, float sweep) {
             this(button, shape, cx, cy, w, h, startAngle, sweep, cx, cy);
         }
 
@@ -68,7 +61,7 @@ public class RemoteDiagramView extends View {
          * still being drawn and highlighted). This constructor lets such slots keep their shared
          * drawing center while getting distinct, spatially-separated points for navigation instead.
          */
-        Slot(RemoteButton button, Shape shape, float cx, float cy, float w, float h, float startAngle, float sweep,
+        Slot(ProgramButton button, Shape shape, float cx, float cy, float w, float h, float startAngle, float sweep,
              float navCx, float navCy) {
             this.button = button; this.shape = shape;
             this.cx = cx; this.cy = cy; this.w = w; this.h = h;
@@ -81,7 +74,7 @@ public class RemoteDiagramView extends View {
     /** A DPAD_ARC slot whose drawing geometry is the shared ring, but whose nav anchor is offset
      *  toward midAngleDeg (270=up, 0=right, 90=down, 180=left in screen coords) so it's spatially
      *  distinct from the ring's other 3 arcs and from SELECT at the ring's true center. */
-    private static Slot dpadArcSlot(RemoteButton b, float ringCx, float ringCy, float ringW, float ringH,
+    private static Slot dpadArcSlot(ProgramButton b, float ringCx, float ringCy, float ringW, float ringH,
                                      float drawStartAngle, float midAngleDeg, float navK) {
         double rad = Math.toRadians(midAngleDeg);
         float navCx = ringCx + (float) Math.cos(rad) * (ringW / 2f) * navK;
@@ -91,7 +84,7 @@ public class RemoteDiagramView extends View {
 
     /** A ROCKER_TOP/BOTTOM slot whose drawing geometry is the full shared pill, but whose nav anchor
      *  sits in its own quarter of the pill so it's spatially distinct from the other half. */
-    private static Slot rockerSlot(RemoteButton b, Shape half, float pillCx, float pillCy, float pillW, float pillH) {
+    private static Slot rockerSlot(ProgramButton b, Shape half, float pillCx, float pillCy, float pillW, float pillH) {
         float navCy = pillCy + (half == Shape.ROCKER_TOP ? -0.25f : 0.25f) * pillH;
         return new Slot(b, half, pillCx, pillCy, pillW, pillH, 0, 0, pillCx, navCy);
     }
@@ -103,57 +96,83 @@ public class RemoteDiagramView extends View {
     // height-fraction, which is exactly what tripped up an earlier eyeballed version of this file.
     private static List<Slot> buildSlots() {
         List<Slot> s = new ArrayList<Slot>();
-        s.add(new Slot(RemoteButton.POWER, Shape.CIRCLE, 0.1986f, 0.0605f, 0.1743f, 0.0487f, 0, 0));
-        s.add(new Slot(RemoteButton.CUSTOM_C, Shape.CIRCLE, 0.7971f, 0.0605f, 0.1771f, 0.0487f, 0, 0));
+        s.add(new Slot(ProgramButton.POWER, Shape.CIRCLE, 0.1986f, 0.0605f, 0.1703f, 0.0447f, 0, 0));
 
         // D-pad: 4 arc quadrants on the OUTER ring, SELECT on the smaller INNER circle. All 4 arcs
         // share the ring's center as their DRAWING point (that's what makes them one ring visually),
         // so each gets a separate navigation anchor offset toward its own arc's angular midpoint -
         // 270 deg=up, 0 deg=right, 90 deg=down, 180 deg=left in screen coordinates (y increases downward).
         {
-            float ringCx = 0.4914f, ringCy = 0.2645f, ringW = 0.7429f, ringH = 0.2068f;
+            float ringCx = 0.4914f, ringCy = 0.2645f, ringW = 0.7329f, ringH = 0.2028f;
             float navK = 0.55f; // fraction of the ring's radius to offset the nav anchor outward
-            s.add(dpadArcSlot(RemoteButton.UP, ringCx, ringCy, ringW, ringH, 225, 270, navK));
-            s.add(dpadArcSlot(RemoteButton.RIGHT, ringCx, ringCy, ringW, ringH, 315, 0, navK));
-            s.add(dpadArcSlot(RemoteButton.DOWN, ringCx, ringCy, ringW, ringH, 45, 90, navK));
-            s.add(dpadArcSlot(RemoteButton.LEFT, ringCx, ringCy, ringW, ringH, 135, 180, navK));
+            s.add(dpadArcSlot(ProgramButton.UP, ringCx, ringCy, ringW, ringH, 225, 270, navK));
+            s.add(dpadArcSlot(ProgramButton.RIGHT, ringCx, ringCy, ringW, ringH, 315, 0, navK));
+            s.add(dpadArcSlot(ProgramButton.DOWN, ringCx, ringCy, ringW, ringH, 45, 90, navK));
+            s.add(dpadArcSlot(ProgramButton.LEFT, ringCx, ringCy, ringW, ringH, 135, 180, navK));
         }
-        s.add(new Slot(RemoteButton.SELECT, Shape.DPAD_CENTER, 0.4943f, 0.2649f, 0.4457f, 0.1226f, 0, 0));
+        s.add(new Slot(ProgramButton.SELECT, Shape.DPAD_CENTER, 0.4943f, 0.2649f, 0.4417f, 0.1186f, 0, 0));
 
-        s.add(new Slot(RemoteButton.BACK, Shape.CIRCLE, 0.2200f, 0.4127f, 0.2286f, 0.0629f, 0, 0));
-        s.add(new Slot(RemoteButton.MENU, Shape.CIRCLE, 0.7800f, 0.4131f, 0.2286f, 0.0621f, 0, 0));
+        s.add(new Slot(ProgramButton.BACK, Shape.CIRCLE, 0.2200f, 0.4127f, 0.2246f, 0.0589f, 0, 0));
+        s.add(new Slot(ProgramButton.MENU, Shape.CIRCLE, 0.7800f, 0.4131f, 0.2246f, 0.0589f, 0, 0));
 
-        s.add(new Slot(RemoteButton.REWIND, Shape.CIRCLE, 0.2186f, 0.4898f, 0.2257f, 0.0629f, 0, 0));
-        s.add(new Slot(RemoteButton.PLAY_PAUSE, Shape.CIRCLE, 0.5000f, 0.4902f, 0.2286f, 0.0621f, 0, 0));
-        s.add(new Slot(RemoteButton.FAST_FORWARD, Shape.CIRCLE, 0.7800f, 0.4894f, 0.2286f, 0.0621f, 0, 0));
+        s.add(new Slot(ProgramButton.REWIND, Shape.CIRCLE, 0.2186f, 0.4898f, 0.2246f, 0.0589f, 0, 0));
+        s.add(new Slot(ProgramButton.PLAY_PAUSE, Shape.CIRCLE, 0.5000f, 0.4902f, 0.2246f, 0.0589f, 0, 0));
+        s.add(new Slot(ProgramButton.FAST_FORWARD, Shape.CIRCLE, 0.7800f, 0.4894f, 0.2246f, 0.0589f, 0, 0));
 
         // Volume/channel rockers: the FULL pill's box is used for both halves' DRAWING (ROCKER_TOP/
         // BOTTOM each draws only its half, but needs the whole pill's geometry to shape that half
         // correctly) - but each half needs its own nav anchor, same reasoning as the d-pad arcs above,
         // or VOLUME_DOWN/CHANNEL_DOWN become highlighted-but-unreachable dead ends.
-        s.add(rockerSlot(RemoteButton.VOLUME_UP, Shape.ROCKER_TOP, 0.2186f, 0.6034f, 0.2200f, 0.1376f));
-        s.add(rockerSlot(RemoteButton.VOLUME_DOWN, Shape.ROCKER_BOTTOM, 0.2186f, 0.6034f, 0.2200f, 0.1376f));
-        s.add(new Slot(RemoteButton.GUIDE_LIVE, Shape.CIRCLE, 0.5000f, 0.5668f, 0.2286f, 0.0629f, 0, 0));
-        s.add(rockerSlot(RemoteButton.CHANNEL_UP, Shape.ROCKER_TOP, 0.7771f, 0.6034f, 0.2229f, 0.1376f));
-        s.add(rockerSlot(RemoteButton.CHANNEL_DOWN, Shape.ROCKER_BOTTOM, 0.7771f, 0.6034f, 0.2229f, 0.1376f));
+        s.add(rockerSlot(ProgramButton.VOLUME_UP, Shape.ROCKER_TOP, 0.2186f, 0.6034f, 0.2090f, 0.1346f));
+        s.add(rockerSlot(ProgramButton.VOLUME_DOWN, Shape.ROCKER_BOTTOM, 0.2186f, 0.6034f, 0.2090f, 0.1346f));
+        s.add(new Slot(ProgramButton.GUIDE_LIVE, Shape.CIRCLE, 0.5000f, 0.5668f, 0.2246f, 0.0589f, 0, 0));
+        s.add(rockerSlot(ProgramButton.CHANNEL_UP, Shape.ROCKER_TOP, 0.7771f, 0.6034f, 0.2090f, 0.1336f));
+        s.add(rockerSlot(ProgramButton.CHANNEL_DOWN, Shape.ROCKER_BOTTOM, 0.7771f, 0.6034f, 0.2090f, 0.1336f));
 
-        s.add(new Slot(RemoteButton.MUTE, Shape.CIRCLE, 0.2214f, 0.7166f, 0.2314f, 0.0637f, 0, 0));
-        s.add(new Slot(RemoteButton.CUSTOM_A, Shape.CIRCLE, 0.5000f, 0.7170f, 0.2286f, 0.0629f, 0, 0));
-        s.add(new Slot(RemoteButton.CUSTOM_B, Shape.CIRCLE, 0.7814f, 0.7170f, 0.2314f, 0.0629f, 0, 0));
+        s.add(new Slot(ProgramButton.MUTE, Shape.CIRCLE, 0.2214f, 0.7166f, 0.2246f, 0.0589f, 0, 0));
 
-        // 4 app-shortcut rectangles are intentionally NOT added: confirmed non-programmable.
+        s.add(new Slot(ProgramButton.ALEXA, Shape.CIRCLE, 0.4980f, 0.1180f, 0.2090f, 0479f, 0, 0));
+        s.add(new Slot(ProgramButton.HOME, Shape.CIRCLE, 0.5000f, 0.4127f, 0.2246f, 0.0589f, 0, 0));
+        s.add(new Slot(ProgramButton.SETTINGS, Shape.CIRCLE, 0.5000f, 0.6420f, 0.2246f, 0.0589f, 0, 0));
+        s.add(new Slot(ProgramButton.APP1, Shape.APP_RECT, 0.707f, 0.788f, 0.374f, 0.046f, 0, 0));
+        s.add(new Slot(ProgramButton.APP2, Shape.APP_RECT, 0.285f, 0.788f, 0.374f, 0.046f, 0, 0));
+        s.add(new Slot(ProgramButton.APP3, Shape.APP_RECT, 0.284f, 0.851f, 0.374f, 0.046f, 0, 0));
+        s.add(new Slot(ProgramButton.APP4, Shape.APP_RECT, 0.706f, 0.851f, 0.374f, 0.046f, 0, 0));
+        // Recents and Pro custom keys have no confirmed direct-table ID.
         return s;
     }
 
     private static final List<Slot> ALL_SLOTS = buildSlots(); // every slot here is programmable now
     private static final List<Slot> NAV_SLOTS = ALL_SLOTS;
 
+    // Manual navigation overrides for pairs the geometric nearest-neighbor algorithm gets wrong.
+    // Keyed by "BUTTON,dx,dy" using the same dx/dy convention onKeyDown already uses.
+    private static final java.util.Map<String, ProgramButton> NAV_OVERRIDE = new java.util.HashMap<>();
+    private static final java.util.Set<String> NAV_EXIT = new java.util.HashSet<>();
+    private static String navKey(ProgramButton b, int dx, int dy) { return b.name() + "," + dx + "," + dy; }
+    static {
+        NAV_OVERRIDE.put(navKey(ProgramButton.POWER, 0, 1), ProgramButton.ALEXA);
+        NAV_EXIT.add(navKey(ProgramButton.POWER, 1, 0));   // right from Power leaves the diagram (to "Copy codes")
+        NAV_EXIT.add(navKey(ProgramButton.ALEXA, 1, 0));   // right from Alexa also leaves the diagram (to "Copy codes")
+        
+        NAV_OVERRIDE.put(navKey(ProgramButton.HOME, -1, 0), ProgramButton.BACK);
+        NAV_OVERRIDE.put(navKey(ProgramButton.HOME, 1, 0), ProgramButton.MENU);
+
+        NAV_OVERRIDE.put(navKey(ProgramButton.SETTINGS, -1, 0), ProgramButton.VOLUME_DOWN);
+        NAV_OVERRIDE.put(navKey(ProgramButton.SETTINGS, 1, 0), ProgramButton.CHANNEL_DOWN);
+        NAV_OVERRIDE.put(navKey(ProgramButton.SETTINGS, 0, 1), ProgramButton.APP2);
+
+        NAV_OVERRIDE.put(navKey(ProgramButton.APP2, 1, 0), ProgramButton.APP1);
+        NAV_OVERRIDE.put(navKey(ProgramButton.APP1, -1, 0), ProgramButton.APP2);
+        NAV_OVERRIDE.put(navKey(ProgramButton.APP3, 1, 0), ProgramButton.APP4);
+    }    
+
     interface CodeStateProvider {
-        boolean hasCode(RemoteButton b);   // a code is learned/set locally for this button
-        boolean isPushed(RemoteButton b);  // that code has been copied to the physical remote
+        boolean hasCode(ProgramButton b);   // a code is learned/set locally for this button
+        boolean isPushed(ProgramButton b);  // that code has been copied to the physical remote
     }
-    interface OnButtonSelectedListener { void onButtonSelected(RemoteButton b); }   // short press
-    interface OnButtonLongPressedListener { void onButtonLongPressed(RemoteButton b); }
+    interface OnButtonSelectedListener { void onButtonSelected(ProgramButton b); }   // short press
+    interface OnButtonLongPressedListener { void onButtonLongPressed(ProgramButton b); }
 
     private CodeStateProvider codeStateProvider;
     private OnButtonSelectedListener selectedListener;
@@ -167,7 +186,7 @@ public class RemoteDiagramView extends View {
             if (longPressListener != null) longPressListener.onButtonLongPressed(getFocusedButton());
         }
     };
-    private RemoteButton learningButton; // non-null while a learn is in progress
+    private ProgramButton learningButton; // non-null while a learn is in progress
     private boolean pulseOn = true;
     private Bitmap remoteBitmap;
     private final Handler pulseHandler = new Handler(Looper.getMainLooper());
@@ -218,10 +237,10 @@ public class RemoteDiagramView extends View {
     void setOnButtonSelectedListener(OnButtonSelectedListener l) { this.selectedListener = l; }
     void setOnButtonLongPressedListener(OnButtonLongPressedListener l) { this.longPressListener = l; }
 
-    RemoteButton getFocusedButton() { return NAV_SLOTS.get(focusedNavIndex).button; }
+    ProgramButton getFocusedButton() { return NAV_SLOTS.get(focusedNavIndex).button; }
 
     /** Call when a learn sequence starts/ends for `b` (null = ended) to drive the red pulsing state. */
-    void setLearningButton(RemoteButton b) {
+    void setLearningButton(ProgramButton b) {
         this.learningButton = b;
         pulseHandler.removeCallbacks(pulseTick);
         if (b != null) {
@@ -253,14 +272,14 @@ public class RemoteDiagramView extends View {
             canvas.drawBitmap(remoteBitmap, src, dst, bitmapPaint);
         }
 
-        float stroke = Math.max(2f, w * 0.012f);
+        float stroke = Math.max(2f, w * 0.016f);
         for (Slot s : ALL_SLOTS) drawSlot(canvas, s, w, h, stroke);
     }
 
     private void drawSlot(Canvas canvas, Slot s, int w, int h, float baseStroke) {
         boolean focused = isFocused() && NAV_SLOTS.get(focusedNavIndex) == s;
         int color = colorFor(s);
-        float stroke = focused ? baseStroke * 2.2f : baseStroke;
+        float stroke = focused ? baseStroke * 1.6f : baseStroke;
         strokePaint.setStrokeWidth(stroke);
         strokePaint.setColor(color);
 
@@ -375,7 +394,21 @@ public class RemoteDiagramView extends View {
     }
 
     private boolean moveFocus(int dx, int dy) {
-    
+
+        ProgramButton cur = NAV_SLOTS.get(focusedNavIndex).button;
+        String k = navKey(cur, dx, dy);
+        if (NAV_EXIT.contains(k)) return false;
+        ProgramButton target = NAV_OVERRIDE.get(k);
+        if (target != null) {
+            for (int i = 0; i < NAV_SLOTS.size(); i++) {
+                if (NAV_SLOTS.get(i).button == target) {
+                    focusedNavIndex = i;
+                    invalidate();
+                    return true;
+                }
+            }
+        }
+
         if (dx > 0 && NAV_SLOTS.get(focusedNavIndex).navCx >= 0.68f) {
             return false;
         }

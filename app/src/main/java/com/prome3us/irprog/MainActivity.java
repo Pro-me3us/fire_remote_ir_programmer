@@ -19,11 +19,11 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
+import android.widget.EditText;
 
-import com.amazon.tv.devicecontrol.commons.Definitions;
-import com.amazon.tv.devicecontrol.commons.Definitions.DeviceFunction;
-import com.amazon.tv.devicecontrol.commons.Definitions.RemoteButton;
-import com.amazon.tv.devicecontrol.commons.Dtos;
+
 
 import java.util.ArrayList;
 import java.util.Locale;
@@ -71,19 +71,23 @@ public class MainActivity extends Activity {
     private SharedPreferences store;
     private volatile String activeLearnToken;
 
+    private View scrimView;
+    private LinearLayout slidePanel;
+    private int pad;
     private TextView logView;
     private ScrollView logScroll;
     private RemoteDiagramView diagramView;
-    private volatile RemoteButton learningInProgress; // non-null while a learn sequence is running
+    private volatile ProgramButton learningInProgress; // non-null while a learn sequence is running
 
     // ------------------------------------------------------------------ button name parsing
 
-    /** Accepts exact RemoteButton names plus a few common aliases. */
-    private static RemoteButton parseButton(String s) {
+    /** Accepts exact ProgramButton names plus a few common aliases. */
+    private static ProgramButton parseButton(String s) {
         if (s == null) return null;
         String n = s.trim().toUpperCase(Locale.US).replace('-', '_').replace(' ', '_');
         if (n.equals("VOL_UP") || n.equals("VOLUMEUP")) n = "VOLUME_UP";
         if (n.equals("VOL_DOWN") || n.equals("VOLUMEDOWN")) n = "VOLUME_DOWN";
+        if (n.equals("MIC") || n.equals("VOICE")) n = "ALEXA";
         if (n.equals("FF")) n = "FAST_FORWARD";
         if (n.equals("RW") || n.equals("FR")) n = "REWIND";
         if (n.equals("OK") || n.equals("ENTER") || n.equals("CENTER") || n.equals("DPAD_OK")) n = "SELECT";
@@ -91,7 +95,7 @@ public class MainActivity extends Activity {
         if (n.equals("CH_DOWN") || n.equals("CHDOWN") || n.equals("CHANNELDOWN")) n = "CHANNEL_DOWN";
         if (n.equals("GUIDE") || n.equals("LIVE")) n = "GUIDE_LIVE";
         try {
-            return RemoteButton.valueOf(n);
+            return ProgramButton.valueOf(n);
         } catch (IllegalArgumentException e) {
             return null;
         }
@@ -189,14 +193,14 @@ public class MainActivity extends Activity {
         diagramView = new RemoteDiagramView(this);
         diagramView.setId(View.generateViewId());
         diagramView.setCodeStateProvider(new RemoteDiagramView.CodeStateProvider() {
-            @Override public boolean hasCode(RemoteButton b) { return getCode(b, 1) != null; }
-            @Override public boolean isPushed(RemoteButton b) { return MainActivity.this.isPushed(b); }
+            @Override public boolean hasCode(ProgramButton b) { return getCode(b, 1) != null; }
+            @Override public boolean isPushed(ProgramButton b) { return MainActivity.this.isPushed(b); }
         });
         diagramView.setOnButtonSelectedListener(new RemoteDiagramView.OnButtonSelectedListener() {
-            @Override public void onButtonSelected(RemoteButton b) { runAsync(cmd("learn", b)); }
+            @Override public void onButtonSelected(ProgramButton b) { runAsync(cmd("learn", b)); }
         });
         diagramView.setOnButtonLongPressedListener(new RemoteDiagramView.OnButtonLongPressedListener() {
-            @Override public void onButtonLongPressed(RemoteButton b) { showButtonOptionsDialog(b); }
+            @Override public void onButtonLongPressed(ProgramButton b) { showButtonOptionsDialog(b); }
         });
 
         FrameLayout diagramWrapper = new FrameLayout(this);
@@ -216,21 +220,35 @@ public class MainActivity extends Activity {
         row.addView(actions, actionsParams);
 
         Button copyButton = addButton(actions, "Copy codes to remote", new View.OnClickListener() {
-            @Override public void onClick(View v) { runAsync(cmd("push", null)); }
+            @Override public void onClick(View v) {
+                runAsync(cmd("push", null));
+            }
         });
         Button restoreButton = addButton(actions, "Clear all remote codes", new View.OnClickListener() {
-            @Override public void onClick(View v) { runAsync(cmd("restore", null)); }
+            @Override public void onClick(View v) {
+                new AlertDialog.Builder(MainActivity.this).setTitle("Clear all remote codes?")
+                        .setMessage("This restores the remote through devicecontrol and clears the app's saved codes.")
+                        .setNegativeButton("Cancel", null)
+                        .setPositiveButton("Clear", (dialog, which) -> runAsync(cmd("restore", null))).show();
+            }
         });
-        
+        Button clearLogButton = addButton(actions, "Clear log", new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (logView != null) logView.setText("");
+            }
+        });
+
         // Explicitly move RIGHT from the diagram into the first action button.
         copyButton.setId(View.generateViewId());
         restoreButton.setId(View.generateViewId());
+        clearLogButton.setId(View.generateViewId());
 
         diagramView.setNextFocusRightId(copyButton.getId());
 
-        // Allow LEFT from either action button to return to the remote diagram.
+        // Allow LEFT from any action button to return to the remote diagram.
         copyButton.setNextFocusLeftId(diagramView.getId());
-        restoreButton.setNextFocusLeftId(diagramView.getId());        
+        restoreButton.setNextFocusLeftId(diagramView.getId());
+        clearLogButton.setNextFocusLeftId(diagramView.getId());       
 
         // Learn-tolerance slider: D-pad LEFT/RIGHT moves it when focused; applies to all buttons.
         final TextView tolLabel = new TextView(this);
@@ -257,7 +275,8 @@ public class MainActivity extends Activity {
         });
         actions.addView(tolBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        restoreButton.setNextFocusDownId(tolBar.getId());
+        restoreButton.setNextFocusDownId(clearLogButton.getId());
+        clearLogButton.setNextFocusDownId(tolBar.getId());
         
         // Measure the buttons at their natural (wrap-content) width, then give the action
         // column half of that width. The button labels will wrap as needed, and the log
@@ -296,18 +315,45 @@ public class MainActivity extends Activity {
         // Allow RIGHT from the action buttons to enter the log.
         copyButton.setNextFocusRightId(logScroll.getId());
         restoreButton.setNextFocusRightId(logScroll.getId());
+        clearLogButton.setNextFocusRightId(logScroll.getId());
         tolBar.setNextFocusRightId(logScroll.getId());
 
         // Allow LEFT from the log to return to the action buttons.
         logScroll.setNextFocusLeftId(copyButton.getId());
         
-        setContentView(outer);
+        final FrameLayout rootFrame = new FrameLayout(this);
+        rootFrame.addView(outer, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        scrimView = new View(this);
+        scrimView.setBackgroundColor(0xCC000000);
+        scrimView.setAlpha(0f);
+        scrimView.setVisibility(View.GONE);
+        scrimView.setFocusable(false);
+        scrimView.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { closeButtonOptionsPanel(); }
+        });
+        rootFrame.addView(scrimView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        int panelWidthPx = (int) (getResources().getDisplayMetrics().widthPixels * 0.5f);
+        slidePanel = new LinearLayout(this);
+        slidePanel.setOrientation(LinearLayout.VERTICAL);
+        slidePanel.setBackgroundColor(0xFF1A1D29);
+        slidePanel.setPadding(pad, pad, pad, 0);
+        slidePanel.setVisibility(View.GONE);
+        slidePanel.setTranslationX(panelWidthPx);
+        FrameLayout.LayoutParams panelLp = new FrameLayout.LayoutParams(panelWidthPx, ViewGroup.LayoutParams.MATCH_PARENT);
+        panelLp.gravity = android.view.Gravity.END;
+        rootFrame.addView(slidePanel, panelLp);
+
+        setContentView(rootFrame);
         copyButton.requestFocus();
     }
 
     /** Long-press-on-a-button popup: test-blast the stored code from the Cube's own IR blaster, or
      *  clear the button. Replaces the old dedicated "Clear selected button" action-column button. */
-    private void showButtonOptionsDialog(final RemoteButton btn) {
+    private void showButtonOptionsDialog(final ProgramButton btn) {
         boolean hasCode = getCode(btn, 1) != null;
         final ArrayList<String> labels = new ArrayList<String>();
         final ArrayList<Runnable> actions2 = new ArrayList<Runnable>();
@@ -318,10 +364,10 @@ public class MainActivity extends Activity {
             labels.add("Clear this button's stored code");
             actions2.add(new Runnable() { @Override public void run() { runAsync(cmd("clear", btn)); } });
         } else {
-            labels.add("(no code stored for " + btn + " - nothing to test or clear)");
+            labels.add("no code stored for " + btn + " - nothing to test or clear");
             actions2.add(new Runnable() { @Override public void run() { } });
         }
-        
+
         for (final String[] p : IR_PRESETS) {
             labels.add("Program: " + p[0]);
             actions2.add(new Runnable() { @Override public void run() {
@@ -330,27 +376,185 @@ public class MainActivity extends Activity {
                 sb.putString("code2", p[2]);
                 runAsync(sb);
             } });
-        }        
+        }
+        labels.add("Apply an IR protocol code...");
+        actions2.add(new Runnable() { @Override public void run() { showApplyProtocolDialog(btn); } });
 
-        AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(btn.name())
-                .setItems(labels.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
-                    @Override public void onClick(android.content.DialogInterface d, int which) {
-                        actions2.get(which).run();
-                        d.dismiss();
-                    }
-                })
-                .setNegativeButton("Cancel", null)
-                .create();
-        // Belt-and-suspenders: refocus the diagram as soon as the dialog closes, however it closes
-        // (an option chosen, Cancel, or the back button) - independent of whatever the chosen action's
-        // own command eventually does, so focus never has a gap where it could land somewhere else.
-        dialog.setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
-            @Override public void onDismiss(android.content.DialogInterface d) { refocusDiagram(); }
-        });
-        dialog.show();
+        openButtonOptionsPanel(btn, labels, actions2);
     }
 
+    private void openButtonOptionsPanel(ProgramButton btn, ArrayList<String> labels, final ArrayList<Runnable> actions2) {
+        slidePanel.removeAllViews();
+
+        TextView title = new TextView(this);
+        title.setText(btn.name());
+        title.setTextSize(16);
+        title.setTextColor(0xFFFFFFFF);
+        title.setPadding(0, 0, 0, pad);
+        slidePanel.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        
+        ScrollView optionsScroll = new ScrollView(this);
+        optionsScroll.setVerticalScrollBarEnabled(false);
+        LinearLayout optionsList = new LinearLayout(this);
+        optionsList.setOrientation(LinearLayout.VERTICAL);
+        optionsScroll.addView(optionsList, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        slidePanel.addView(optionsScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        final View.OnKeyListener closeOnLeftOrBack = new View.OnKeyListener() {
+            @Override public boolean onKey(View v, int keyCode, android.view.KeyEvent event) {
+                if (event.getAction() != android.view.KeyEvent.ACTION_DOWN) return false;
+                if (keyCode == android.view.KeyEvent.KEYCODE_DPAD_LEFT
+                        || keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+                    closeButtonOptionsPanel();
+                    return true;
+                }
+                return false;
+            }
+        };
+
+        Button firstButton = null;
+        for (int i = 0; i < labels.size(); i++) {
+            final int idx = i;
+            Button b = addButton(optionsList, labels.get(i), new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    actions2.get(idx).run();
+                    closeButtonOptionsPanel();
+                }
+            });
+            b.setOnKeyListener(closeOnLeftOrBack);
+            if (firstButton == null) firstButton = b;
+        }
+
+        scrimView.setVisibility(View.VISIBLE);
+        slidePanel.setVisibility(View.VISIBLE);
+        scrimView.animate().alpha(1f).setDuration(220).start();
+        slidePanel.animate().translationX(0).setDuration(220).start();
+
+        final Button toFocus = firstButton;
+        slidePanel.post(new Runnable() { @Override public void run() { toFocus.requestFocus(); } });
+    }
+
+    private void closeButtonOptionsPanel() {
+        int panelWidthPx = slidePanel.getWidth() > 0 ? slidePanel.getWidth()
+                : (int) (getResources().getDisplayMetrics().widthPixels * 0.5f);
+        scrimView.animate().alpha(0f).setDuration(200).withEndAction(new Runnable() {
+            @Override public void run() { scrimView.setVisibility(View.GONE); }
+        }).start();
+        slidePanel.animate().translationX(panelWidthPx).setDuration(200).withEndAction(new Runnable() {
+            @Override public void run() {
+                slidePanel.setVisibility(View.GONE);
+                refocusDiagram();
+            }
+        }).start();
+    }
+
+    private void showApplyProtocolDialog(final ProgramButton btn) {
+        final IrProtocols.Protocol[] protos = IrProtocols.Protocol.values();
+        final String[] protoLabels = new String[protos.length + 1];
+        for (int i = 0; i < protos.length; i++) protoLabels[i] = protos[i].name();
+        final int PRONTO_INDEX = protos.length;
+        protoLabels[PRONTO_INDEX] = "PRONTO (paste raw code)";
+
+        final LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        pad = (int) (16 * getResources().getDisplayMetrics().density);
+        root.setPadding(pad, pad, pad, pad);
+
+        final Spinner protoSpinner = new Spinner(this);
+        protoSpinner.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, protoLabels));
+        root.addView(protoSpinner);
+
+        final TextView hint = new TextView(this);
+        hint.setPadding(0, pad / 2, 0, 0);
+        root.addView(hint);
+
+        final EditText codeField = new EditText(this);
+        codeField.setHint("code as hex (e.g. 20DF10EF)");
+        codeField.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+        root.addView(codeField);
+
+        final EditText bitsField = new EditText(this);
+        bitsField.setHint("bits (only used for Panasonic/Kaseikyo)");
+        bitsField.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        bitsField.setText("48");
+        root.addView(bitsField);
+
+        final EditText sonyField = new EditText(this);
+        sonyField.setHint("Sony SIRC variant: 12, 15 or 20");
+        sonyField.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        sonyField.setText("12");
+        root.addView(sonyField);
+
+        protoSpinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(android.widget.AdapterView<?> p, View v, int pos, long id) {
+                if (pos == PRONTO_INDEX) {
+                    bitsField.setVisibility(View.GONE);
+                    sonyField.setVisibility(View.GONE);
+                    hint.setText("Paste a full learned/Pronto code, e.g. starting with 0000 006D ...");
+                    return;
+                }
+                IrProtocols.Protocol sel = protos[pos];
+                bitsField.setVisibility(sel == IrProtocols.Protocol.PANASONIC_KASEIKYO ? View.VISIBLE : View.GONE);
+                sonyField.setVisibility(sel == IrProtocols.Protocol.SONY_SIRC ? View.VISIBLE : View.GONE);
+                hint.setText(protocolHint(sel));
+            }
+            @Override public void onNothingSelected(android.widget.AdapterView<?> p) { }
+        });
+        hint.setText(protocolHint(protos[0]));
+        bitsField.setVisibility(View.GONE);
+        sonyField.setVisibility(View.GONE);
+
+        new AlertDialog.Builder(this).setTitle("Apply an IR protocol code")
+                .setView(root)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Apply", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int which) {
+                        try {
+                            int pos = protoSpinner.getSelectedItemPosition();
+                            String pronto;
+                            if (pos == PRONTO_INDEX) {
+                                String raw = Pronto.normalize(codeField.getText().toString());
+                                String err = Pronto.check(raw);
+                                if (err != null) throw new IllegalArgumentException("invalid Pronto code: " + err);
+                                pronto = raw;
+                            } else {
+                                IrProtocols.Protocol sel = protos[pos];
+                                String codeStr = codeField.getText().toString().trim();
+                                if (codeStr.toLowerCase(java.util.Locale.US).startsWith("0x")) codeStr = codeStr.substring(2);
+                                long code = Long.parseLong(codeStr, 16);
+                                int bits = Integer.parseInt(bitsField.getText().toString().trim());
+                                int sonyVariant = Integer.parseInt(sonyField.getText().toString().trim());
+                                IrProtocols.Result r = IrProtocols.encode(sel, code, bits, sonyVariant);
+                                pronto = Pronto.encode(r.us, r.freqHz);
+                            }
+                            Bundle sb = cmd("set", btn);
+                            sb.putString("code1", pronto);
+                            runAsync(sb);
+                        } catch (Exception e) {
+                            say("Could not apply that code: " + e);
+                        }
+                    }
+                }).show();
+    }
+
+    private static String protocolHint(IrProtocols.Protocol p) {
+        switch (p) {
+            case NEC: return "Enter as 0xAACC: AA=8-bit address, CC=8-bit command (inversion added automatically).";
+            case NEC_EXTENDED: return "Enter the full 32-bit code as published/detected (e.g. 0xf30c7d02) - address and command are extracted automatically.";
+            case SAMSUNG32: case LG32: return "Enter the full 32-bit code exactly as published for your device.";
+            case SONY_SIRC: return "Enter the combined address+command bits; set the variant below (12/15/20-bit).";
+            case RC5: return "Enter the 14-bit frame (2 start bits + toggle + 5-bit address + 6-bit command).";
+            case RC6: return "Enter mode(3 bits)+toggle(1 bit)+address(8 bits)+command(8 bits) as one value.";
+            case PANASONIC_KASEIKYO: return "Enter the full frame (set bit length below) exactly as published for your device.";
+            case JVC: return "Enter the full 16-bit code (address+command, no inversion).";
+            case SHARP: return "Enter the full 15-bit code.";
+        }
+        return "";
+    }
+    
     private static final String[][] IR_PRESETS = {
         {"Cube power on",
          "0000 006D 0023 0000 0158 00AA 0019 003E 0018 0015 0018 0015 0018 0015 0018 0015 0018 0015 0018 0015 0018 0015 0018 0015 0018 0040 0018 003E 0018 003F 0018 0040 0018 0040 0018 003E 0018 0040 0018 0015 0018 0015 0018 0015 0018 0015 0018 003F 0018 0015 0018 0015 0018 0015 0018 0040 0018 0040 0018 003F 0018 003F 0018 0015 0018 0040 0018 003F 0018 0040 0018 05DA 0157 0056 0018",
@@ -400,7 +604,7 @@ public class MainActivity extends Activity {
 
     /** These push View state changes onto the UI thread - cmdLearn/learnOnePress run on `worker`,
      *  and their callbacks arrive on a Binder thread, neither of which is safe for View mutation. */
-    private void setDiagramLearning(final RemoteButton b) {
+    private void setDiagramLearning(final ProgramButton b) {
         if (diagramView == null) return;
         ui.post(new Runnable() { @Override public void run() { diagramView.setLearningButton(b); } });
     }
@@ -436,7 +640,7 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ command plumbing
 
-    private static Bundle cmd(String name, RemoteButton button) {
+    private static Bundle cmd(String name, ProgramButton button) {
         Bundle b = new Bundle();
         b.putString("cmd", name);
         if (button != null) b.putString("fn", button.name());
@@ -497,15 +701,30 @@ public class MainActivity extends Activity {
         } else if (c.equals("set")) {
             cmdSet(requireButton(b), b.getString("code1"), b.getString("code2"));
         } else if (c.equals("push")) {
-            cmdPush(b.getInt("blast", DEFAULT_BLAST_COUNT), b.getInt("duty", DEFAULT_DUTY_CYCLE));
+            cmdPush(b.getString("addr"));
+        } else if (c.equals("ble")) {
+            dcs.bluetooth(b.getString("addr"), null, bluetoothLog());
+        } else if (c.equals("blepush")) {
+            String[] values = b.getString("ids", "13").split(",");
+            int[] ids = new int[values.length];
+            java.util.HashSet<Integer> used = new java.util.HashSet<>();
+            for (int i = 0; i < values.length; i++) {
+                ids[i] = Integer.parseInt(values[i].trim(), 16);
+                if (ids[i] < 0 || ids[i] > 255 || ids[i] == 2 || !used.add(ids[i]))
+                    throw new IllegalArgumentException("Probe IDs must be unique hex bytes, excluding 02");
+            }
+            byte[] table = ProbeTable.buildTable(ids);
+            IrTable.validate(table);
+            clearPushedState();
+            dcs.bluetooth(b.getString("addr"), table, bluetoothLog());
         } else if (c.equals("show")) {
             cmdShow();
         } else if (c.equals("clear")) {
             if ("all".equalsIgnoreCase(b.getString("fn"))) {
-                for (RemoteButton btn : RemoteButton.values()) { putCode(btn, 1, null); putCode(btn, 2, null); }
+                for (ProgramButton btn : ProgramButton.values()) { putCode(btn, 1, null); putCode(btn, 2, null); }
                 say("Cleared all stored codes.");
             } else {
-                RemoteButton btn = requireButton(b);
+                ProgramButton btn = requireButton(b);
                 putCode(btn, 1, null);
                 putCode(btn, 2, null);
                 say("Cleared " + btn + ".");
@@ -513,14 +732,7 @@ public class MainActivity extends Activity {
             refreshDiagram();
             refocusDiagram();
         } else if (c.equals("restore")) {
-            dcs.restoreRemote();
-            for (RemoteButton btn : RemoteButton.values()) { putCode(btn, 1, null); putCode(btn, 2, null); }
-            refreshDiagram();
-            refocusDiagram();
-            say("Sent restoreRemoteConfiguration() and cleared all locally stored codes (so the diagram "
-                    + "doesn't show stale green buttons for codes no longer on the remote). No result "
-                    + "callback exists for restoreRemoteConfiguration(); check "
-                    + "`adb logcat | grep -i RemoteBlasterSync` if you want to confirm the remote-side reset.");
+            cmdClearRemote(b.getString("addr"));
         } else if (c.equals("test")) {
             cmdTest(requireButton(b));
         } else {
@@ -530,22 +742,23 @@ public class MainActivity extends Activity {
 
     /** Blasts the button's stored code1 from the Cube's OWN IR emitter (NOT the remote) - lets you
      *  verify a learned/typed code is actually correct before ever pushing it to the remote. */
-    private void cmdTest(RemoteButton btn) {
+    private void cmdTest(ProgramButton btn) {
         String code = getCode(btn, 1);
         if (code == null) {
             say("Nothing to test: " + btn + " has no stored code.");
             return;
         }
         say("Test-blasting " + btn + " from this Cube's IR emitter: " + code);
+        say(IrDetector.describe(code));
         IrTransmitter.Result r = IrTransmitter.transmit(this, code);
         say((r.success ? "Test blast OK: " : "Test blast FAILED: ") + r.message);
         refocusDiagram();
     }
 
-    private RemoteButton requireButton(Bundle b) {
-        RemoteButton btn = parseButton(b.getString("fn"));
+    private ProgramButton requireButton(Bundle b) {
+        ProgramButton btn = parseButton(b.getString("fn"));
         if (btn == null) throw new IllegalArgumentException(
-                "Missing/invalid --es fn. Valid buttons: " + java.util.Arrays.toString(RemoteButton.values()));
+                "Missing/invalid --es fn. Valid buttons: " + java.util.Arrays.toString(ProgramButton.values()));
         return btn;
     }
 
@@ -558,11 +771,11 @@ public class MainActivity extends Activity {
     private volatile double learnTolerance = DEFAULT_LEARN_TOLERANCE;
     private SeekBar tolBar;
 
-    private void cmdLearn(RemoteButton btn, int presses, int timeoutMs) {
+    private void cmdLearn(ProgramButton btn, int presses, int timeoutMs) {
         cmdLearn(btn, presses, timeoutMs, learnTolerance);
     }
 
-    private void cmdLearn(RemoteButton btn, int presses, int timeoutMs, double tolerance) {
+    private void cmdLearn(ProgramButton btn, int presses, int timeoutMs, double tolerance) {
         if (presses < 1) throw new IllegalArgumentException("presses must be >= 1");
         synchronized (this) {
             if (learningInProgress != null) {
@@ -595,7 +808,7 @@ public class MainActivity extends Activity {
     }
 
     /** Captures press `n` of `total`, then recurses for the next one (or finishes on the last). */
-    private void learnOnePress(final RemoteButton btn, final int total, final int timeoutMs, final double tolerance,
+    private void learnOnePress(final ProgramButton btn, final int total, final int timeoutMs, final double tolerance,
                                 final int n, final ArrayList<String> captured) {
         if (destroyed || learningInProgress != btn) return;
         say("Press " + n + "/" + total + " now" + (n == 1 ? "." : " - the SAME button again."));
@@ -661,7 +874,7 @@ public class MainActivity extends Activity {
      * match was rejecting valid codes in practice. See Pronto.approxEqual's javadoc for exactly what's
      * compared strictly (structure) vs with tolerance (timing values).
      */
-    private void finishLearn(RemoteButton btn, ArrayList<String> captured, double tolerance) {
+    private void finishLearn(ProgramButton btn, ArrayList<String> captured, double tolerance) {
         String a = captured.get(0);
         boolean allSame = true;
         for (String c : captured) if (!Pronto.approxEqual(c, a, tolerance)) { allSame = false; break; }
@@ -670,6 +883,7 @@ public class MainActivity extends Activity {
             putCode(btn, 1, a);
             putCode(btn, 2, null);
             say("Learned " + btn + " - all " + captured.size() + " presses matched within tolerance (simple protocol):\n  " + a);
+            say(IrDetector.describe(a));
             say("Run 'push' when you've learned everything you want.");
             endLearning();
             return;
@@ -687,6 +901,8 @@ public class MainActivity extends Activity {
             putCode(btn, 2, b);
             say("Learned " + btn + " - presses alternated A/B within tolerance as expected (toggle-bit protocol):\n"
                     + "  code1: " + a + "\n  code2: " + b);
+            say("code1 " + IrDetector.describe(a));
+            say("code2 " + IrDetector.describe(b));
             say("Run 'push' when you've learned everything you want.");
             endLearning();
             return;
@@ -708,7 +924,7 @@ public class MainActivity extends Activity {
         endLearning();
     }
 
-    private void cmdSet(RemoteButton btn, String code1, String code2) {
+    private void cmdSet(ProgramButton btn, String code1, String code2) {
         if (code1 == null) throw new IllegalArgumentException("Missing --es code1 '<pronto hex>'");
         String err = Pronto.check(code1);
         if (err != null) throw new IllegalArgumentException("code1 invalid: " + err);
@@ -721,14 +937,15 @@ public class MainActivity extends Activity {
             putCode(btn, 2, null);
         }
         say("Stored " + btn + (code2 != null ? " (code1 + code2)" : " (code1)") + ". Run 'push' to send.");
+        refreshDiagram();
     }
 
     private void cmdShow() {
         StringBuilder sb = new StringBuilder("Stored codes:\n");
-        for (RemoteButton btn : RemoteButton.values()) {
+        for (ProgramButton btn : ProgramButton.values()) {
             String c1 = getCode(btn, 1), c2 = getCode(btn, 2);
             if (c1 == null) continue; // only list buttons that actually have something stored
-            sb.append("  ").append(btn).append(" -> ").append(Definitions.defaultFunctionFor(btn)).append(":\n");
+            sb.append("  ").append(btn).append(" -> ").append(ButtonIds.ID.get(btn)).append(":\n");
             sb.append("    code1: ").append(c1).append('\n');
             if (c2 != null) sb.append("    code2: ").append(c2).append('\n');
         }
@@ -736,77 +953,67 @@ public class MainActivity extends Activity {
         say(sb.toString());
     }
 
-    // The service's own RemoteBlasterSync.performCustomSync checks shouldExecuteOperation() BEFORE
-    // wrapping the call in its retry policy - so this specific failure (isLuckyLPaired()==false or a
-    // stale macAddress, both read once at service-construction time / via an async listener) gets
-    // ZERO automatic retries server-side, even though it can be transient (e.g. right after the
-    // devicecontrol service process has been freshly restarted). We retry it ourselves.
-    private static final int PUSH_RETRY_ATTEMPTS = 3;
-    private static final long PUSH_RETRY_DELAY_MS = 1500;
-
-    private void cmdPush(int blast, int duty) throws RemoteException {
-        cmdPush(blast, duty, 1);
+    private BleTransfer.Listener bluetoothLog() {
+        return new BleTransfer.Listener() {
+            public void progress(String s) { say(s); }
+            public void finished(boolean success, String s) { say((success ? "SUCCESS: " : "ERROR: ") + s); }
+        };
     }
 
-    private void cmdPush(final int blast, final int duty, final int attempt) throws RemoteException {
+    private void clearPushedState() {
+        SharedPreferences.Editor edit = store.edit();
+        for (ProgramButton button : ProgramButton.values()) edit.putBoolean(button.name() + ".pushed", false);
+        edit.apply(); refreshDiagram();
+    }
+
+    private void cmdPush(String address) throws RemoteException {
         if (destroyed) return;
-        ArrayList<Dtos.IrCode> codes = new ArrayList<Dtos.IrCode>();
-        ArrayList<Dtos.RemoteButtonFunction> mapping = new ArrayList<Dtos.RemoteButtonFunction>();
-        final ArrayList<RemoteButton> includedButtons = new ArrayList<RemoteButton>();
-        int withSecond = 0;
-        for (RemoteButton btn : RemoteButton.values()) {
-            String c1 = getCode(btn, 1);
-            if (c1 == null) continue;
-            String c2 = getCode(btn, 2);
-            if (c2 != null) withSecond++;
-            DeviceFunction fn = Definitions.defaultFunctionFor(btn);
-            codes.add(new Dtos.IrCode(fn, c1, c2, false));
-            mapping.add(new Dtos.RemoteButtonFunction(btn, fn));
-            includedButtons.add(btn);
+        final java.util.Map<ProgramButton, String[]> snapshot = new java.util.EnumMap<>(ProgramButton.class);
+        for (ProgramButton button : ProgramButton.values()) {
+            String first = getCode(button, 1);
+            if (first != null) snapshot.put(button, new String[]{first, getCode(button, 2)});
         }
-        if (codes.isEmpty()) {
-            say("Nothing to push: no codes stored. Use learn or set first.");
-            return;
-        }
+        byte[] table = IrTable.build(snapshot);
         ensureDcSettingsEnabled();
-        if (withSecond != 0 && withSecond != codes.size()) {
-            say("WARNING: some buttons have a 2nd (toggle) code and some don't. The service decides "
-                    + "'toggle' mode from the FIRST code in the set, so mixed sets may misbehave.");
-        }
-        Dtos.IrCodeSet set = new Dtos.IrCodeSet("IRProg custom", 0L, blast, duty, codes);
-        say("Pushing " + codes.size() + " button(s) to the remote (blast=" + blast + ", duty=" + duty
-                + (attempt > 1 ? ", attempt " + attempt + "/" + PUSH_RETRY_ATTEMPTS : "")
-                + "). This REPLACES the remote's custom IR table; buttons not listed fall back to Bluetooth-only.");
-        dcs.pushToRemote(set, mapping, new DcsClient.ResultListener() {
-            @Override public void onSuccess() {
-                say("Remote sync reported SUCCESS.");
-                for (RemoteButton btn : includedButtons) setPushed(btn, true);
-                refreshDiagram();
-            }
-            @Override public void onError(String message) {
-                if (attempt < PUSH_RETRY_ATTEMPTS) {
-                    say("Remote sync reported ERROR: " + message + "  (retrying in "
-                            + PUSH_RETRY_DELAY_MS + "ms, attempt " + (attempt + 1) + "/" + PUSH_RETRY_ATTEMPTS + ")");
-                    ui.postDelayed(new Runnable() {
-                        @Override public void run() {
-                            if (destroyed) return;
-                            worker.submit(new Runnable() {
-                                @Override public void run() {
-                                    try { cmdPush(blast, duty, attempt + 1); }
-                                    catch (RemoteException e) { say("Retry failed to send: " + e); }
-                                }
-                            });
-                        }
-                    }, PUSH_RETRY_DELAY_MS);
-                } else {
-                    say("Remote sync reported ERROR: " + message + "  (giving up after "
-                            + PUSH_RETRY_ATTEMPTS + " attempts)");
+        say("Copying " + snapshot.size() + " buttons over Bluetooth. This replaces the remote's custom IR table."
+                + " Keep the remote awake and in range.");
+        clearPushedState();
+        dcs.bluetooth(address, table, new BleTransfer.Listener() {
+            public void progress(String message) { say(message); }
+            public void finished(boolean success, String message) {
+                say((success ? "SUCCESS: " : "ERROR: ") + message);
+                if (success) {
+                    for (java.util.Map.Entry<ProgramButton, String[]> entry : snapshot.entrySet()) {
+                        ProgramButton button = entry.getKey(); String[] pair = entry.getValue();
+                        // A local edit during transfer must not be marked as copied.
+                        setPushed(button, java.util.Objects.equals(pair[0], getCode(button, 1))
+                                && java.util.Objects.equals(pair[1], getCode(button, 2)));
+                    }
+                    refreshDiagram();
                 }
             }
         });
-        say("Request sent. Keep the remote awake/in range; result will appear here.");
     }
 
+    private void cmdClearRemote(String address) throws RemoteException {
+        if (destroyed) return;
+        byte[] table = IrTable.buildEmpty();
+        ensureDcSettingsEnabled();
+        say("Clearing the remote's custom IR table over Bluetooth. Keep the remote awake and in range.");
+        clearPushedState();
+        dcs.bluetooth(address, table, new BleTransfer.Listener() {
+            public void progress(String message) { say(message); }
+            public void finished(boolean success, String message) {
+                say((success ? "SUCCESS: " : "ERROR: ") + message);
+                if (success) {
+                    for (ProgramButton btn : ProgramButton.values()) { putCode(btn, 1, null); putCode(btn, 2, null); }
+                    refreshDiagram();
+                    refocusDiagram();
+                }
+            }
+        });
+    }
+    
     // The setting write must happen in the root process, just like the protected service calls.
     private void ensureDcSettingsEnabled() throws RemoteException {
         int old = dcs.ensureRemoteSetting();
@@ -815,19 +1022,19 @@ public class MainActivity extends Activity {
 
     // ------------------------------------------------------------------ storage
 
-    private String getCode(RemoteButton btn, int slot) { return store.getString(btn.name() + "." + slot, null); }
+    private String getCode(ProgramButton btn, int slot) { return store.getString(btn.name() + "." + slot, null); }
 
     // Tracks whether the CURRENTLY STORED code for a button has actually been copied to the physical
     // remote yet (blue = learned/set locally, not pushed; green = pushed). Any change to the stored
     // code (learn, set, clear) invalidates this - the remote's real state no longer matches local
     // storage until the next successful push.
-    private boolean isPushed(RemoteButton btn) { return store.getBoolean(btn.name() + ".pushed", false); }
+    private boolean isPushed(ProgramButton btn) { return store.getBoolean(btn.name() + ".pushed", false); }
 
-    private void setPushed(RemoteButton btn, boolean pushed) {
+    private void setPushed(ProgramButton btn, boolean pushed) {
         store.edit().putBoolean(btn.name() + ".pushed", pushed).apply();
     }
 
-    private void putCode(RemoteButton btn, int slot, String code) {
+    private void putCode(ProgramButton btn, int slot, String code) {
         SharedPreferences.Editor e = store.edit();
         if (code == null) e.remove(btn.name() + "." + slot); else e.putString(btn.name() + "." + slot, code);
         e.putBoolean(btn.name() + ".pushed", false); // any code change invalidates "matches the remote"

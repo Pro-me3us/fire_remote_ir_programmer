@@ -187,6 +187,34 @@ final class DcsClient {
         } finally { data.recycle(); reply.recycle(); }
     }
 
+    void bluetooth(String address, byte[] table, BleTransfer.Listener listener) throws RemoteException {
+        Binder callback = new Binder() {
+            @Override protected boolean onTransact(int code, Parcel data, Parcel reply, int flags) {
+                data.enforceInterface(DcsRootService.BLE_EVENTS);
+                String message = data.readString();
+                if (code != 1) synchronized (DcsClient.this) { liveCallbacks.remove(this); }
+                main.post(() -> {
+                    if (closed) return;
+                    if (code == 1) listener.progress(message);
+                    else listener.finished(code == 2, message);
+                });
+                return true;
+            }
+        };
+        synchronized (this) { liveCallbacks.add(callback); }
+        Parcel data = Parcel.obtain(); Parcel reply = Parcel.obtain();
+        try {
+            data.writeInterfaceToken(DcsRootService.CONTROL);
+            data.writeString(address); data.writeByteArray(table); data.writeStrongBinder(callback);
+            if (!requireService().transact(DcsRootService.BLUETOOTH_TRANSFER, data, reply, 0))
+                throw new RemoteException("Root helper rejected Bluetooth operation");
+            reply.readException();
+        } catch (RemoteException | RuntimeException e) {
+            synchronized (this) { liveCallbacks.remove(callback); }
+            throw e;
+        } finally { data.recycle(); reply.recycle(); }
+    }
+
     boolean isConnected() { return service != null; }
 
     private IBinder requireService() throws RemoteException {

@@ -26,6 +26,10 @@ public final class DcsRootService extends RootService {
     static final int CONNECT = 1001;
     static final int ENSURE_REMOTE_SETTING = 1002;
     static final int LEARNING_DIAGNOSTICS = 1003;
+    static final int BLUETOOTH_TRANSFER = 1005;
+    static final String BLE_EVENTS = "com.prome3us.irprog.BleEvents";
+    private final Object bluetoothLock = new Object();
+    private BleTransfer bluetooth;
     static final int READY = 1;
     static final int FAILED = 2;
 
@@ -89,6 +93,19 @@ public final class DcsRootService extends RootService {
                         reply.writeInt(learningStops);
                         reply.writeInt(learning != null ? 1 : 0);
                     }
+                    return true;
+                }
+                if (code == BLUETOOTH_TRANSFER) {
+                    data.enforceInterface(CONTROL);
+                    String address = data.readString();
+                    byte[] table = data.createByteArray();
+                    IBinder callback = data.readStrongBinder();
+                    if (callback == null) throw new IllegalArgumentException("Missing Bluetooth callback");
+                    if (address != null && !android.bluetooth.BluetoothAdapter.checkBluetoothAddress(address))
+                        throw new IllegalArgumentException("Invalid Bluetooth address");
+                    if (table != null) IrTable.validate(table);
+                    startBluetooth(address, table, callback);
+                    reply.writeNoException();
                     return true;
                 }
                 // Only the programmer's operations and read-only API version are exposed.
@@ -289,6 +306,37 @@ public final class DcsRootService extends RootService {
         } finally { if (process != null) process.destroy(); }
     }
 
+    private void startBluetooth(String address, byte[] table, IBinder callback) throws RemoteException {
+        synchronized (bluetoothLock) {
+            if (bluetooth != null) throw new IllegalStateException("A Bluetooth operation is already running");
+            final BleTransfer[] holder = new BleTransfer[1];
+            IBinder.DeathRecipient death = () -> holder[0].cancel();
+            BleTransfer transfer = new BleTransfer(this, address, table, new BleTransfer.Listener() {
+                public void progress(String message) { send(1, message); }
+                public void finished(boolean success, String message) {
+                    synchronized (bluetoothLock) {
+                        if (bluetooth == holder[0]) bluetooth = null;
+                    }
+                    callback.unlinkToDeath(death, 0);
+                    send(success ? 2 : 3, message);
+                }
+                private void send(int code, String message) {
+                    Parcel event = Parcel.obtain();
+                    try {
+                        event.writeInterfaceToken(BLE_EVENTS); event.writeString(message);
+                        callback.transact(code, event, null, IBinder.FLAG_ONEWAY);
+                    } catch (RemoteException e) { holder[0].cancel(); }
+                    finally { event.recycle(); }
+                }
+            });
+            holder[0] = transfer;
+            try { callback.linkToDeath(death, 0); }
+            catch (RemoteException e) { transfer.cancel(); throw e; }
+            bluetooth = transfer;
+            transfer.start();
+        }
+    }
+
     private void notifyClient(int code, String message) {
         IBinder target = events;
         if (target == null) return;
@@ -303,6 +351,7 @@ public final class DcsRootService extends RootService {
     }
 
     @Override public void onDestroy() {
+        synchronized (bluetoothLock) { if (bluetooth != null) bluetooth.cancel(); }
         IBinder target = amazon;
         String token;
         synchronized (learningLock) { token = learning == null ? null : learning.token; }

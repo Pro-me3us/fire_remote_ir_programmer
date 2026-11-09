@@ -10,9 +10,9 @@ android {
         applicationId 'com.prome3us.irprog'
         minSdk 22          // Original UI baseline; root bridge tested on API 28
         targetSdk 30
-        versionCode 3
-        versionName '1.2-root'
-        testInstrumentationRunner 'com.prome3us.irprog.RootIntegrationTest'
+        versionCode 2
+        versionName '0.2'
+        testInstrumentationRunner (project.findProperty('irTestRunner') ?: 'com.prome3us.irprog.BleRootIntegrationTest')
     }
 
     buildTypes {

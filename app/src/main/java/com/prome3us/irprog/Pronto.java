@@ -101,4 +101,37 @@ final class Pronto {
         }
         return null;
     }
+    
+    /** Learned Pronto -> table-format 10us-unit words (frequency word1, carrier/duty handled by caller). */
+    static int[] toTicks10us(String pronto) {
+        String[] w = normalize(pronto).split(" ");
+        int divisor = Integer.parseInt(w[1], 16);
+        double freqHz = 4145146.0 / divisor;
+        int[] out = new int[w.length - 4];
+        for (int i = 4; i < w.length; i++) {
+            int raw = Integer.parseInt(w[i], 16);
+            double us = raw * 1e6 / freqHz;
+            out[i - 4] = (int) Math.round(us / 10.0);
+        }
+        return out;
+    }
+
+    static int carrierHz(String pronto) {
+        String[] w = normalize(pronto).split(" ");
+        return (int) Math.round(4145146.0 / Integer.parseInt(w[1], 16));
+    }  
+    
+    /** Raw microseconds + carrier -> a synthetic learned Pronto string, same shape cmdSet already
+     *  accepts/stores (so protocol-generated codes flow through the existing pipeline unchanged). */
+    static String encode(int[] micros, int freqHz) {
+        int divisor = (int) Math.round(4145146.0 / freqHz);
+        StringBuilder sb = new StringBuilder("0000 ")
+                .append(String.format(Locale.US, "%04X", divisor)).append(" ")
+                .append(String.format(Locale.US, "%04X", micros.length / 2)).append(" 0000");
+        for (int us : micros) {
+            int ticks = (int) Math.round(us * freqHz / 1e6);
+            sb.append(" ").append(String.format(Locale.US, "%04X", ticks & 0xffff));
+        }
+        return sb.toString();
+    }      
 }

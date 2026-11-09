@@ -3,6 +3,8 @@
 
     <!-- Protected Amazon calls and settings writes run in a Magisk root process. -->
     <uses-permission android:name="android.permission.TRANSMIT_IR" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />    
 
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
@@ -17,7 +19,6 @@
         android:label="Fire remote IR programmer"
         android:banner="@drawable/banner"
         android:theme="@android:style/Theme.DeviceDefault">
-        android:banner="@drawable/banner"
 
         <!-- libsu starts DcsRootService itself; it is not an Android manifest service. -->
 
